@@ -109,32 +109,50 @@ app.get("/api/wifi-config/:deviceId", async (req, res) => {
   try {
     const { deviceId } = req.params;
     
+    console.log(`📱 WiFi config request for device: ${deviceId}`);
+    
     // Find device in database
     const Rpi = await import("./models/rpiModel.js");
-    const device = await Rpi.default.findOne({ rpi_id: deviceId });
+    const device = await Rpi.default.findOne({ rpi_id: deviceId })
+      .select('rpi_id rpi_name wifi_ssid wifi_password wifi_configured updatedAt');
     
     if (!device) {
-      return res.status(404).json({
-        success: false,
+      return res.json({
+        success: true,
+        device_id: deviceId,
+        wifi_ssid: null,
+        wifi_password: null,
+        has_wifi_config: false,
+        wifi_configured: false,
+        last_updated: null,
         message: "Device not found"
       });
     }
+    
+    // Check if WiFi is configured
+    const has_wifi_config = !!(device.wifi_ssid && device.wifi_password);
+    
+    console.log(`📡 Device ${deviceId}: SSID=${device.wifi_ssid}, HasConfig=${has_wifi_config}`);
     
     // Return WiFi configuration
     res.json({
       success: true,
       device_id: deviceId,
-      wifi_ssid: device.wifi_ssid,
-      wifi_password: device.wifi_password,
-      has_wifi_config: !!(device.wifi_ssid && device.wifi_password),
-      last_updated: device.updatedAt
+      device_name: device.rpi_name,
+      wifi_ssid: device.wifi_ssid || null,
+      wifi_password: device.wifi_password || null,
+      has_wifi_config: has_wifi_config,
+      wifi_configured: device.wifi_configured || false,
+      last_updated: device.updatedAt,
+      note: "WiFi credentials managed by server only"
     });
     
   } catch (error) {
     console.error("WiFi config error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to fetch WiFi configuration"
+      message: "Failed to fetch WiFi configuration",
+      has_wifi_config: false
     });
   }
 });

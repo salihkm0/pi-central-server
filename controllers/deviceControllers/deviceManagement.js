@@ -262,7 +262,7 @@ export const deleteDeviceWifiConfig = async (req, res) => {
   }
 };
 
-// Update device health metrics (keep existing)
+// Update device health metrics
 export const updateDeviceHealth = async (req, res) => {
   try {
     const {
@@ -283,47 +283,66 @@ export const updateDeviceHealth = async (req, res) => {
       });
     }
 
+    console.log(`📊 Health update received from: ${actualDeviceId}`);
+    console.log(`📊 Metrics: CPU=${metrics.cpu_usage}%, Memory=${metrics.memory_usage}%, Internet=${internet_status}`);
+
     // Store health data
     const healthRecord = new DeviceHealth({
       device_id: actualDeviceId,
       metrics: {
-        ...metrics,
-        wifi_status,
-        internet_status,
+        cpu_usage: metrics.cpu_usage || 0,
+        memory_usage: metrics.memory_usage || 0,
+        disk_usage: metrics.disk_usage || 0,
+        temperature: metrics.temperature || null,
+        network_status: metrics.network_status || "unknown",
+        video_count: metrics.video_count || 0,
+        uptime: metrics.uptime || 0,
+        mqtt_connected: metrics.mqtt_connected || false,
+        last_sync: metrics.last_sync || null,
+        wifi_status: metrics.wifi_status || "unknown",
+        wifi_signal: metrics.wifi_signal || 0,
+        internet_status: internet_status || false
       },
       timestamp: new Date(timestamp),
     });
 
     await healthRecord.save();
+    console.log(`✅ Health data saved for device: ${actualDeviceId}`);
 
     // Update device last_seen timestamp and status based on metrics
     const updateData = {
       last_seen: new Date(),
+      rpi_status: "active", // Always set to active when receiving health updates
+      status: "active" // Also update the status field for consistency
     };
 
-    // Update status based on health metrics
+    // Update WiFi status if provided (for monitoring only, not for configuration)
+    if (wifi_status && wifi_status.ssid) {
+      updateData.wifi_ssid = wifi_status.ssid;
+      updateData.wifi_status = wifi_status.connected ? "connected" : "disconnected";
+    }
+
+    // Update based on health metrics
     if (metrics.cpu_usage > 90 || metrics.memory_usage > 90) {
       updateData.rpi_status = "warning";
-    } else if (
-      (metrics.cpu_usage < 50 && metrics.memory_usage < 80) ||
-      internet_status === true
-    ) {
-      updateData.rpi_status = "active";
+      updateData.status = "warning";
     }
 
-    // Update WiFi status if provided (for monitoring only, not for configuration)
-    if (wifi_status) {
-      updateData.wifi_status = wifi_status;
-    }
+    await Rpi.findOneAndUpdate(
+      { rpi_id: actualDeviceId },
+      updateData,
+      { upsert: false, new: true }
+    );
 
-    await Rpi.findOneAndUpdate({ rpi_id: actualDeviceId }, updateData);
-
-    console.log(`📊 Health update received from: ${actualDeviceId}`);
+    console.log(`✅ Device ${actualDeviceId} status updated to: ${updateData.rpi_status}`);
 
     res.status(200).json({
       success: true,
-      message: "Health data received",
+      message: "Health data received and saved",
+      device_id: actualDeviceId,
+      timestamp: new Date().toISOString()
     });
+
   } catch (error) {
     console.error("❌ Health update error:", error);
     res.status(500).json({
