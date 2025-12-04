@@ -13,8 +13,14 @@ const rpiModelSchema = new mongoose.Schema(
       required: true 
     },
     rpi_serverUrl: String,
-    wifi_ssid: String,
-    wifi_password: String,
+    wifi_ssid: { 
+      type: String, 
+      default: "spotus" 
+    },
+    wifi_password: { 
+      type: String, 
+      default: "spotus@123" 
+    },
     vehicle_no: String,
     owner_name: String,
     owner_phone: String,
