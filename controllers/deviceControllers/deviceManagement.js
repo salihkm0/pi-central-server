@@ -15,7 +15,10 @@ export const registerDevice = async (req, res) => {
       last_seen,
       mac_address,
       serial_number,
+      rpi_serverUrl,
       // IMPORTANT: DO NOT accept wifi_ssid or wifi_password from device
+      wifi_ssid, // This comes from device but we should ignore/validate it
+      wifi_password // This comes from device but we should ignore/validate it
     } = req.body;
 
     console.log(`📱 Device registration attempt: ${rpi_id}`);
@@ -29,6 +32,19 @@ export const registerDevice = async (req, res) => {
 
     // Generate a friendly device name if not provided
     const deviceName = rpi_name || `ADS-Display-${rpi_id.substring(0, 8)}`;
+
+    // First, check if device already exists
+    const existingDevice = await Rpi.findOne({ rpi_id });
+    
+    // Get existing WiFi if device already exists
+    let existingWifi = null;
+    if (existingDevice && existingDevice.wifi_ssid && existingDevice.wifi_password) {
+      existingWifi = {
+        ssid: existingDevice.wifi_ssid,
+        password: existingDevice.wifi_password
+      };
+      console.log(`📡 Device ${rpi_id} already has WiFi configured: ${existingWifi.ssid}`);
+    }
 
     const deviceData = {
       rpi_id,
@@ -49,10 +65,12 @@ export const registerDevice = async (req, res) => {
         "wifi_management",
       ],
       rpi_status: status,
-      // CRITICAL: WiFi details are NEVER saved from device, only managed from server
-      // We do NOT set wifi_ssid or wifi_password here
+      // CRITICAL: Preserve existing WiFi if it exists, otherwise use server defaults
+      wifi_ssid: existingWifi ? existingWifi.ssid : null,
+      wifi_password: existingWifi ? existingWifi.password : null,
       registered_at: first_seen ? new Date(first_seen) : new Date(),
       last_seen: last_seen ? new Date(last_seen) : new Date(),
+      ...(rpi_serverUrl && { rpi_serverUrl }),
       config: {
         sync_interval: 600, // 10 minutes
         health_report_interval: 300, // 5 minutes
@@ -64,32 +82,23 @@ export const registerDevice = async (req, res) => {
       },
     };
 
-    // Update or create device - ensure WiFi fields are NOT overwritten by device data
+    // Update or create device
     const device = await Rpi.findOneAndUpdate(
       { rpi_id },
-      {
-        $set: deviceData,
-        // Preserve existing server-managed WiFi if it exists
-        $setOnInsert: {
-          // Only set WiFi fields on insert if they don't exist (empty)
-          wifi_ssid: null,
-          wifi_password: null,
-        },
-      },
+      deviceData,
       {
         upsert: true,
         new: true,
-        // This ensures WiFi fields are not modified by device registration
         runValidators: true,
       }
     );
 
     console.log(`✅ Device registered/updated: ${rpi_id} - ${deviceName}`);
     console.log(
-      `🎮 Server WiFi control: ${
+      `📡 WiFi Status: ${
         device.wifi_ssid && device.wifi_password
-          ? "Configured (Managed by Server)"
-          : "Not configured - device uses installation WiFi"
+          ? `Configured: ${device.wifi_ssid} (Managed by Server)`
+          : "Not configured - device will use installation WiFi"
       }`
     );
 
@@ -103,11 +112,10 @@ export const registerDevice = async (req, res) => {
         rpi_name: device.rpi_name,
         status: device.rpi_status,
         wifi_configured: !!(device.wifi_ssid && device.wifi_password),
-        // Only return SSID if configured (for information only)
         wifi_ssid: device.wifi_ssid ? device.wifi_ssid : null,
         config: device.config,
         registered_at: device.registered_at,
-        note: "WiFi is managed by central server only",
+        note: "WiFi is managed by central server only. Do not send WiFi credentials during registration."
       },
     };
 

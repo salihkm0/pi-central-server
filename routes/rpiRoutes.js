@@ -21,7 +21,7 @@ rpiRoutes.get("/ping", (req, res) => {
 });
 
 rpiRoutes.post("/update", async (req, res) => {
-  const { rpi_serverUrl, rpi_status, rpi_id, device_info, rpi_name, app_version, wifi_ssid } = req.body;
+  const { rpi_serverUrl, rpi_status, rpi_id, device_info, rpi_name, app_version, wifi_ssid, wifi_password } = req.body;
 
   if (!rpi_id) {
     return res.status(400).json({
@@ -33,6 +33,9 @@ rpiRoutes.post("/update", async (req, res) => {
   console.log(`📱 Received update from device: ${rpi_id}`);
   
   try {
+    // First, check if device already exists
+    const existingDevice = await rpiModel.findOne({ rpi_id });
+    
     const updateData = { 
       rpi_status: rpi_status || "active",
       status: rpi_status || "active", // Update both fields for compatibility
@@ -43,7 +46,28 @@ rpiRoutes.post("/update", async (req, res) => {
     if (device_info) updateData.device_info = device_info;
     if (rpi_name) updateData.rpi_name = rpi_name;
     if (app_version) updateData.app_version = app_version;
-    if (wifi_ssid) updateData.wifi_ssid = wifi_ssid;
+    
+    // CRITICAL: DO NOT update WiFi credentials if they already exist
+    // Only update WiFi if explicitly provided AND device doesn't have existing WiFi config
+    if (wifi_ssid && wifi_password) {
+      if (!existingDevice || !existingDevice.wifi_ssid || !existingDevice.wifi_password) {
+        // Only update WiFi if device doesn't have existing WiFi config
+        updateData.wifi_ssid = wifi_ssid;
+        updateData.wifi_password = wifi_password;
+        console.log(`📡 Setting initial WiFi config for device: ${rpi_id} - ${wifi_ssid}`);
+      } else {
+        console.log(`📡 WiFi config already exists for device ${rpi_id}, keeping existing: ${existingDevice.wifi_ssid}`);
+        // Keep existing WiFi credentials
+        updateData.wifi_ssid = existingDevice.wifi_ssid;
+        updateData.wifi_password = existingDevice.wifi_password;
+      }
+    } else if (existingDevice) {
+      // If no WiFi provided in update, keep existing WiFi
+      if (existingDevice.wifi_ssid && existingDevice.wifi_password) {
+        updateData.wifi_ssid = existingDevice.wifi_ssid;
+        updateData.wifi_password = existingDevice.wifi_password;
+      }
+    }
 
     const rpi = await rpiModel.findOneAndUpdate(
       { rpi_id },
@@ -56,7 +80,8 @@ rpiRoutes.post("/update", async (req, res) => {
       }
     );
     
-    console.log(`✅ Device updated: ${rpi_id} - Status: ${rpi.rpi_status || rpi.status}`);
+    console.log(`✅ Device updated: ${rpi_id} - Status: ${rpi.rpi_status}`);
+    console.log(`📡 Current WiFi for device: ${rpi.wifi_ssid || 'Not set'}`);
     
     return res.status(200).json({ 
       message: "Device updated successfully.", 
@@ -64,7 +89,9 @@ rpiRoutes.post("/update", async (req, res) => {
         id: rpi._id,
         rpi_id: rpi.rpi_id,
         rpi_name: rpi.rpi_name,
-        status: rpi.rpi_status || rpi.status, // Return whichever field exists
+        status: rpi.rpi_status || rpi.status,
+        wifi_ssid: rpi.wifi_ssid,
+        wifi_configured: !!(rpi.wifi_ssid && rpi.wifi_password),
         config: rpi.config
       }, 
       success: true 
