@@ -13,12 +13,13 @@ import {
   updateDeviceWifiConfig,
   deleteDeviceWifiConfig
 } from "../controllers/deviceControllers/deviceManagement.js";
+import { protectWifiFromDeviceUpdates } from "../middleware/wifiProtection.js";
 
 const deviceRoutes = express.Router();
 
 // Device registration and health monitoring (NO authentication for device registration)
-deviceRoutes.post("/register", registerDevice);
-deviceRoutes.post("/health", updateDeviceHealth);
+deviceRoutes.post("/register", protectWifiFromDeviceUpdates, registerDevice);
+deviceRoutes.post("/health", protectWifiFromDeviceUpdates, updateDeviceHealth);
 deviceRoutes.get("/health/:deviceId", getDeviceHealth);
 deviceRoutes.get("/health", getAllDevicesHealth);
 
