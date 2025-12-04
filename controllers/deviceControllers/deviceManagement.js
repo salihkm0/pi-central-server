@@ -16,9 +16,6 @@ export const registerDevice = async (req, res) => {
       mac_address,
       serial_number,
       rpi_serverUrl,
-      // IMPORTANT: DO NOT accept wifi_ssid or wifi_password from device
-      wifi_ssid, // This comes from device but we should ignore/validate it
-      wifi_password // This comes from device but we should ignore/validate it
     } = req.body;
 
     console.log(`📱 Device registration attempt: ${rpi_id}`);
@@ -65,9 +62,6 @@ export const registerDevice = async (req, res) => {
         "wifi_management",
       ],
       rpi_status: status,
-      // CRITICAL: Preserve existing WiFi if it exists, otherwise use server defaults
-      wifi_ssid: existingWifi ? existingWifi.ssid : null,
-      wifi_password: existingWifi ? existingWifi.password : null,
       registered_at: first_seen ? new Date(first_seen) : new Date(),
       last_seen: last_seen ? new Date(last_seen) : new Date(),
       ...(rpi_serverUrl && { rpi_serverUrl }),
