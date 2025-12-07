@@ -31,7 +31,8 @@ const corsOptions = {
     "http://localhost:3004",
     "http://localhost:3006",
     "https://iot-ads-frontend.vercel.app",
-    "https://iot-ads-display.onrender.com"
+    "https://iot-ads-display.onrender.com",
+    "https://spotus-admin.vercel.app"
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Device-ID", "X-API-Key", "User-Agent"],
