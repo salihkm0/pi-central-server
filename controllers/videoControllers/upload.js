@@ -49,38 +49,50 @@ export const uploadVideo = async (req, res) => {
 
     const uploadResult = await parallelUploads3.done();
 
-    // Generate a presigned URL for the uploaded file
-    const getObjectParams = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: key,
-    };
+    // Generate the clean S3 URL without query parameters
+    const cleanFileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
     
-    const fileUrl = await getSignedUrl(
-      s3Client,
-      new GetObjectCommand(getObjectParams),
-      { expiresIn: 60 * 60 * 24 * 7 } // 7 days expiration
-    );
+    // Or use this format if you want exactly like your example:
+    // const cleanFileUrl = `https://spotus-raspberry-pi.s3.ap-south-1.amazonaws.com/${key}`;
 
+    // Create video entry in database with clean URL
     const newVideo = await Video.create({
       filename: filename || req.file.originalname,
       description,
       brand,
       expiryDate,
-      fileUrl: fileUrl,
+      fileUrl: cleanFileUrl, // Store clean URL without query params
       s3Key: key,
       fileSize: req.file.size,
       status: "active",
     });
 
-    // Notify Raspberry Pi servers
+    // Generate presigned URL for Raspberry Pi downloads (temporary access)
+    const getObjectParams = {
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: key,
+    };
+    
+    const presignedUrl = await getSignedUrl(
+      s3Client,
+      new GetObjectCommand(getObjectParams),
+      { expiresIn: 60 * 60 * 24 * 7 } // 7 days expiration for download
+    );
+
+    // Notify Raspberry Pi servers with presigned URL for download
     const rpServers = await Rpi.find();
     const errors = [];
+    
     await Promise.all(
       rpServers.map(async (server) => {
         try {
           await axios.post(`${server.rpi_serverUrl}/download-video`, {
+            videoId: newVideo._id,
             filename: newVideo.filename,
-            fileUrl: newVideo.fileUrl,
+            fileUrl: presignedUrl, // Send presigned URL for download
+            s3Key: key,
+            fileSize: newVideo.fileSize,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
           });
         } catch (error) {
           errors.push({
@@ -95,15 +107,39 @@ export const uploadVideo = async (req, res) => {
       return res.status(206).json({
         success: true,
         message: "Video uploaded with partial server notifications",
-        video: newVideo,
-        // notificationErrors: errors,
+        video: {
+          _id: newVideo._id,
+          filename: newVideo.filename,
+          description: newVideo.description,
+          brand: newVideo.brand,
+          expiryDate: newVideo.expiryDate,
+          fileUrl: newVideo.fileUrl, // Clean URL
+          fileSize: newVideo.fileSize,
+          status: newVideo.status,
+          createdAt: newVideo.createdAt,
+          updatedAt: newVideo.updatedAt,
+        },
+        downloadUrl: presignedUrl, // Include presigned URL in response if needed
+        notificationErrors: errors,
       });
     }
 
     res.json({
       success: true,
       message: "Video uploaded successfully",
-      video: newVideo,
+      video: {
+        _id: newVideo._id,
+        filename: newVideo.filename,
+        description: newVideo.description,
+        brand: newVideo.brand,
+        expiryDate: newVideo.expiryDate,
+        fileUrl: newVideo.fileUrl, // Clean URL
+        fileSize: newVideo.fileSize,
+        status: newVideo.status,
+        createdAt: newVideo.createdAt,
+        updatedAt: newVideo.updatedAt,
+      },
+      downloadUrl: presignedUrl, // Optional: include in response
     });
   } catch (error) {
     console.error("Error uploading video:", error);
