@@ -11,7 +11,8 @@ import {
   deleteDevice,
   getDeviceWifiConfig,
   updateDeviceWifiConfig,
-  deleteDeviceWifiConfig
+  deleteDeviceWifiConfig,
+  getDeviceDetailsById
 } from "../controllers/deviceControllers/deviceManagement.js";
 import { protectWifiFromDeviceUpdates } from "../middleware/wifiProtection.js";
 
@@ -81,5 +82,8 @@ deviceRoutes.get("/:deviceId", protect, getDeviceById);
 deviceRoutes.delete("/:deviceId", protect, deleteDevice);
 deviceRoutes.post("/command", protect, sendBulkCommand);
 deviceRoutes.put("/config/:deviceId", protect, updateDeviceConfig);
+deviceRoutes.get("/:deviceId/details", protect, getDeviceDetailsById);
+
+// router.get('/api/devices/:deviceId/details', getDeviceDetailsById);
 
 export default deviceRoutes;
