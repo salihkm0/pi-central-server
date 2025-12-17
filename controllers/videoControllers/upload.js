@@ -50,7 +50,7 @@ export const uploadVideo = async (req, res) => {
     const uploadResult = await parallelUploads3.done();
 
     // Generate the clean S3 URL without query parameters
-    const cleanFileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    const cleanFileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${key}`;
     
     // Or use this format if you want exactly like your example:
     // const cleanFileUrl = `https://spotus-raspberry-pi.s3.ap-south-1.amazonaws.com/${key}`;
