@@ -264,7 +264,7 @@ export const deleteDeviceWifiConfig = async (req, res) => {
   }
 };
 
-// Update device health metrics
+// Update device health metrics (CREATE OR UPDATE)
 export const updateDeviceHealth = async (req, res) => {
   try {
     const {
@@ -288,8 +288,8 @@ export const updateDeviceHealth = async (req, res) => {
     console.log(`📊 Health update received from: ${actualDeviceId}`);
     console.log(`📊 Metrics: CPU=${metrics.cpu_usage}%, Memory=${metrics.memory_usage}%, Internet=${internet_status}`);
 
-    // Store health data
-    const healthRecord = new DeviceHealth({
+    // Create or update health record
+    const updateData = {
       device_id: actualDeviceId,
       metrics: {
         cpu_usage: metrics.cpu_usage || 0,
@@ -306,13 +306,36 @@ export const updateDeviceHealth = async (req, res) => {
         internet_status: internet_status || false
       },
       timestamp: new Date(timestamp),
-    });
+      $push: {
+        history: {
+          cpu_usage: metrics.cpu_usage || 0,
+          memory_usage: metrics.memory_usage || 0,
+          temperature: metrics.temperature || null,
+          timestamp: new Date(timestamp)
+        }
+      }
+    };
 
-    await healthRecord.save();
-    console.log(`✅ Health data saved for device: ${actualDeviceId}`);
+    // Limit history to last 100 entries
+    if (updateData.$push.history) {
+      updateData.$slice = -100;
+    }
+
+    // Find and update or create new
+    const healthRecord = await DeviceHealth.findOneAndUpdate(
+      { device_id: actualDeviceId },
+      updateData,
+      { 
+        upsert: true, // Create if doesn't exist
+        new: true,
+        setDefaultsOnInsert: true
+      }
+    );
+
+    console.log(`✅ Health data ${healthRecord.isNew ? 'created' : 'updated'} for device: ${actualDeviceId}`);
 
     // Update device last_seen timestamp and status based on metrics
-    const updateData = {
+    const deviceUpdateData = {
       last_seen: new Date(),
       rpi_status: "active", // Always set to active when receiving health updates
       status: "active" // Also update the status field for consistency
@@ -320,29 +343,30 @@ export const updateDeviceHealth = async (req, res) => {
 
     // Update WiFi status if provided (for monitoring only, not for configuration)
     if (wifi_status && wifi_status.ssid) {
-      updateData.wifi_ssid = wifi_status.ssid;
-      updateData.wifi_status = wifi_status.connected ? "connected" : "disconnected";
+      deviceUpdateData.wifi_ssid = wifi_status.ssid;
+      deviceUpdateData.wifi_status = wifi_status.connected ? "connected" : "disconnected";
     }
 
     // Update based on health metrics
     if (metrics.cpu_usage > 90 || metrics.memory_usage > 90) {
-      updateData.rpi_status = "warning";
-      updateData.status = "warning";
+      deviceUpdateData.rpi_status = "warning";
+      deviceUpdateData.status = "warning";
     }
 
     await Rpi.findOneAndUpdate(
       { rpi_id: actualDeviceId },
-      updateData,
+      deviceUpdateData,
       { upsert: false, new: true }
     );
 
-    console.log(`✅ Device ${actualDeviceId} status updated to: ${updateData.rpi_status}`);
+    console.log(`✅ Device ${actualDeviceId} status updated to: ${deviceUpdateData.rpi_status}`);
 
     res.status(200).json({
       success: true,
       message: "Health data received and saved",
       device_id: actualDeviceId,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      is_new: healthRecord.isNew
     });
 
   } catch (error) {
@@ -355,129 +379,55 @@ export const updateDeviceHealth = async (req, res) => {
   }
 };
 
-// Get device health history (keep existing)
+// Get device health (single record per device)
 export const getDeviceHealth = async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const { hours = 24, limit = 100 } = req.query;
 
-    const startTime = new Date(Date.now() - hours * 60 * 60 * 1000);
+    if (!deviceId) {
+      return res.status(400).json({
+        success: false,
+        message: "Device ID is required",
+      });
+    }
 
-    const healthData = await DeviceHealth.find({
-      device_id: deviceId,
-      timestamp: { $gte: startTime },
-    })
-      .sort({ timestamp: -1 })
-      .limit(parseInt(limit));
+    const healthRecord = await DeviceHealth.findOne({ device_id: deviceId });
 
-    // Calculate health statistics
-    const stats = {
-      total_records: healthData.length,
-      avg_cpu:
-        healthData.reduce(
-          (sum, record) => sum + (record.metrics.cpu_usage || 0),
-          0
-        ) / healthData.length,
-      avg_memory:
-        healthData.reduce(
-          (sum, record) => sum + (record.metrics.memory_usage || 0),
-          0
-        ) / healthData.length,
-      online_percentage:
-        (healthData.filter((record) => record.metrics.internet_status === true)
-          .length /
-          healthData.length) *
-        100,
-    };
+    if (!healthRecord) {
+      return res.status(404).json({
+        success: false,
+        message: "Health data not found for this device",
+      });
+    }
 
     res.status(200).json({
       success: true,
-      device_id: deviceId,
-      period: `${hours}h`,
-      statistics: stats,
-      count: healthData.length,
-      data: healthData,
+      health: healthRecord,
     });
+
   } catch (error) {
-    console.error("❌ Get health error:", error);
+    console.error("❌ Error fetching device health:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to fetch health data",
+      message: "Failed to fetch device health",
       error: error.message,
     });
   }
 };
 
-// Get health overview for all devices (keep existing)
+// Get all devices health (latest record for each device)
 export const getAllDevicesHealth = async (req, res) => {
   try {
-    const { status, location, limit = 50, has_wifi = false } = req.query;
-
-    const filter = {};
-    if (status) filter.rpi_status = status;
-    if (location) filter.location = new RegExp(location, "i");
-    if (has_wifi === "true") {
-      filter.wifi_ssid = { $exists: true, $ne: null };
-      filter.wifi_password = { $exists: true, $ne: null };
-    }
-
-    const devices = await Rpi.find(filter)
-      .select(
-        "rpi_id rpi_name rpi_status location last_seen device_info app_version config wifi_ssid wifi_password"
-      )
-      .sort({ last_seen: -1 })
-      .limit(parseInt(limit));
-
-    // Get latest health for each device
-    const deviceHealth = await Promise.all(
-      devices.map(async (device) => {
-        const latestHealth = await DeviceHealth.findOne({
-          device_id: device.rpi_id,
-        }).sort({ timestamp: -1 });
-
-        // Calculate if device is offline (no update in 15 minutes)
-        const isOffline =
-          Date.now() - new Date(device.last_seen).getTime() > 15 * 60 * 1000;
-
-        return {
-          ...device.toObject(),
-          latest_health: latestHealth?.metrics || null,
-          is_offline: isOffline,
-          has_wifi_configuration: !!(device.wifi_ssid && device.wifi_password),
-          last_seen_relative: formatRelativeTime(device.last_seen),
-        };
-      })
-    );
-
-    // Calculate statistics
-    const total = devices.length;
-    const active = devices.filter((d) => d.rpi_status === "active").length;
-    const inactive = devices.filter((d) => d.rpi_status === "in_active").length;
-    const warning = devices.filter((d) => d.rpi_status === "warning").length;
-    const offline = deviceHealth.filter((d) => d.is_offline).length;
-    const withWifi = deviceHealth.filter(
-      (d) => d.has_wifi_configuration
-    ).length;
-
-    const stats = {
-      total,
-      active,
-      inactive,
-      warning,
-      offline,
-      online: total - offline,
-      with_wifi_config: withWifi,
-      without_wifi_config: total - withWifi,
-    };
+    const healthRecords = await DeviceHealth.find().sort({ timestamp: -1 });
 
     res.status(200).json({
       success: true,
-      stats,
-      devices: deviceHealth,
-      timestamp: new Date().toISOString(),
+      count: healthRecords.length,
+      health: healthRecords,
     });
+
   } catch (error) {
-    console.error("❌ Get all health error:", error);
+    console.error("❌ Error fetching all devices health:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch devices health",
@@ -697,3 +647,243 @@ function formatRelativeTime(date) {
   if (diffHours < 24) return `${diffHours}h ago`;
   return `${diffDays}d ago`;
 }
+
+// Get detailed device information by ID (NEW FUNCTION)
+export const getDeviceDetailsById = async (req, res) => {
+  console.log("hitteeeeeeed")
+  try {
+    const { deviceId } = req.params;
+
+    if (!deviceId) {
+      return res.status(400).json({
+        success: false,
+        message: "Device ID is required",
+      });
+    }
+
+    console.log(`🔍 Fetching detailed device info for: ${deviceId}`);
+
+    // Get device information
+    const device = await Rpi.findOne({ rpi_id: deviceId }).lean();
+
+    if (!device) {
+      return res.status(404).json({
+        success: false,
+        message: "Device not found",
+      });
+    }
+
+    // Get latest health data
+    const latestHealth = await DeviceHealth.findOne({ 
+      device_id: deviceId 
+    }).sort({ timestamp: -1 }).lean();
+
+    // Get health history (last 24 hours)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const healthHistory = await DeviceHealth.find({
+      device_id: deviceId,
+      timestamp: { $gte: twentyFourHoursAgo }
+    })
+      .sort({ timestamp: -1 })
+      .limit(100)
+      .lean();
+
+    // Calculate device status
+    const lastSeen = new Date(device.last_seen);
+    const minutesSinceLastSeen = Math.floor((Date.now() - lastSeen.getTime()) / (1000 * 60));
+    const isOnline = minutesSinceLastSeen < 5; // Online if last seen < 5 minutes ago
+    const status = isOnline ? "online" : "offline";
+
+    // Calculate uptime percentage (if device is reporting uptime)
+    const uptimePercentage = latestHealth?.metrics?.uptime 
+      ? Math.min(100, (latestHealth.metrics.uptime / (24 * 60 * 60)) * 100) // Convert to percentage of 24h
+      : null;
+
+    // Format health metrics
+    const healthMetrics = latestHealth ? {
+      cpu_usage: latestHealth.metrics.cpu_usage || 0,
+      memory_usage: latestHealth.metrics.memory_usage || 0,
+      disk_usage: latestHealth.metrics.disk_usage || 0,
+      temperature: latestHealth.metrics.temperature || null,
+      video_count: latestHealth.metrics.video_count || 0,
+      uptime: latestHealth.metrics.uptime || 0,
+      uptime_percentage: uptimePercentage,
+      network_status: latestHealth.metrics.network_status || "unknown",
+      wifi_signal: latestHealth.metrics.wifi_signal || 0,
+      wifi_status: latestHealth.metrics.wifi_status || "unknown",
+      internet_status: latestHealth.metrics.internet_status || false,
+      mqtt_connected: latestHealth.metrics.mqtt_connected || false,
+      last_sync: latestHealth.metrics.last_sync || null,
+      timestamp: latestHealth.timestamp
+    } : null;
+
+    // WiFi configuration details (don't expose password)
+    const wifiConfiguration = device.wifi_ssid ? {
+      ssid: device.wifi_ssid,
+      is_configured: true,
+      managed_by_server: true,
+      configured_at: device.updatedAt,
+      last_updated: formatRelativeTime(device.updatedAt)
+    } : {
+      is_configured: false,
+      managed_by_server: true
+    };
+
+    // Device capabilities summary
+    const capabilitiesSummary = device.capabilities?.map(cap => ({
+      name: cap,
+      enabled: true
+    })) || [];
+
+    // Performance analysis
+    const performanceAnalysis = latestHealth ? {
+      status: latestHealth.metrics.cpu_usage > 90 || latestHealth.metrics.memory_usage > 90 ? "warning" : "good",
+      cpu_status: latestHealth.metrics.cpu_usage > 90 ? "high" : latestHealth.metrics.cpu_usage > 70 ? "medium" : "low",
+      memory_status: latestHealth.metrics.memory_usage > 90 ? "high" : latestHealth.metrics.memory_usage > 70 ? "medium" : "low",
+      temperature_status: latestHealth.metrics.temperature > 80 ? "high" : latestHealth.metrics.temperature > 60 ? "medium" : "low",
+      recommendations: []
+    } : null;
+
+    // Add recommendations based on health metrics
+    if (performanceAnalysis) {
+      if (latestHealth.metrics.cpu_usage > 90) {
+        performanceAnalysis.recommendations.push("High CPU usage detected. Consider reducing video complexity or checking for background processes.");
+      }
+      if (latestHealth.metrics.memory_usage > 90) {
+        performanceAnalysis.recommendations.push("High memory usage detected. Consider optimizing video files or increasing available memory.");
+      }
+      if (latestHealth.metrics.temperature > 80) {
+        performanceAnalysis.recommendations.push("High temperature detected. Ensure proper ventilation and cooling.");
+      }
+      if (latestHealth.metrics.disk_usage > 90) {
+        performanceAnalysis.recommendations.push("Disk space is running low. Consider removing unused videos or files.");
+      }
+    }
+
+    // Network details
+    const networkDetails = {
+      hostname: device.device_info?.hostname || "unknown",
+      mac_address: device.device_info?.mac_address || "unknown",
+      ip_address: device.device_info?.ip_address || "unknown",
+      network_interfaces: device.device_info?.network_interfaces || [],
+      last_known_wifi: device.wifi_ssid || "unknown",
+      connection_type: device.wifi_ssid ? "WiFi" : "Ethernet"
+    };
+
+    // Sync status
+    const syncStatus = {
+      last_sync: latestHealth?.metrics?.last_sync || null,
+      sync_interval: device.config?.sync_interval || 600,
+      auto_sync_enabled: true,
+      next_sync_in: latestHealth?.metrics?.last_sync 
+        ? `~${device.config?.sync_interval / 60} minutes` 
+        : "unknown"
+    };
+
+    // Response data
+    const responseData = {
+      success: true,
+      device: {
+        // Basic Information
+        id: device._id,
+        rpi_id: device.rpi_id,
+        rpi_name: device.rpi_name,
+        status: status,
+        is_online: isOnline,
+        last_seen: device.last_seen,
+        last_seen_relative: formatRelativeTime(device.last_seen),
+        minutes_since_last_seen: minutesSinceLastSeen,
+        registered_at: device.registered_at,
+        location: device.location || "unknown",
+        
+        // Owner Information (if available)
+        owner_name: device.owner_name || "Not specified",
+        owner_phone: device.owner_phone || "Not specified",
+        vehicle_no: device.vehicle_no || "Not specified",
+        
+        // System Information
+        system_info: {
+          model: device.device_info?.model || "unknown",
+          os: device.device_info?.os || "unknown",
+          architecture: device.device_info?.architecture || "unknown",
+          cores: device.device_info?.cores || 0,
+          total_memory: device.device_info?.total_memory || "unknown",
+          username: device.device_info?.username || "pi",
+          serial_number: device.device_info?.serial_number || "unknown",
+          is_raspberry_pi: device.device_info?.is_raspberry_pi || false
+        },
+        
+        // Health & Performance
+        health: {
+          current: healthMetrics,
+          has_health_data: !!latestHealth,
+          last_health_update: latestHealth?.timestamp || null,
+          health_update_interval: "5 minutes"
+        },
+        
+        // Performance Analysis
+        performance: performanceAnalysis,
+        
+        // Configuration
+        configuration: {
+          app_version: device.app_version || "1.0.0",
+          capabilities: capabilitiesSummary,
+          config: device.config || {},
+          wifi: wifiConfiguration
+        },
+        
+        // Network
+        network: networkDetails,
+        
+        // Sync Status
+        sync: syncStatus,
+        
+        // Health History
+        health_history: {
+          available: healthHistory.length > 0,
+          records_count: healthHistory.length,
+          period: "24 hours",
+          data: healthHistory.map(record => ({
+            timestamp: record.timestamp,
+            cpu_usage: record.metrics.cpu_usage,
+            memory_usage: record.metrics.memory_usage,
+            temperature: record.metrics.temperature
+          }))
+        },
+        
+        // Alerts & Warnings
+        alerts: {
+          has_warnings: performanceAnalysis?.status === "warning",
+          warning_count: performanceAnalysis?.recommendations.length || 0,
+          recommendations: performanceAnalysis?.recommendations || []
+        },
+        
+        // Statistics
+        statistics: {
+          uptime_percentage: uptimePercentage,
+          avg_cpu_usage: healthHistory.length > 0 
+            ? Math.round(healthHistory.reduce((sum, record) => sum + (record.metrics.cpu_usage || 0), 0) / healthHistory.length)
+            : null,
+          avg_memory_usage: healthHistory.length > 0 
+            ? Math.round(healthHistory.reduce((sum, record) => sum + (record.metrics.memory_usage || 0), 0) / healthHistory.length)
+            : null,
+          max_temperature: healthHistory.length > 0 
+            ? Math.max(...healthHistory.map(record => record.metrics.temperature || 0))
+            : null
+        }
+      }
+    };
+
+    console.log(`✅ Detailed device info retrieved for: ${deviceId}`);
+    
+    res.status(200).json(responseData);
+
+  } catch (error) {
+    console.error("❌ Error fetching detailed device information:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch device details",
+      error: error.message,
+    });
+  }
+};
